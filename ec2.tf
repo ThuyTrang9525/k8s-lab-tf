@@ -19,21 +19,13 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-data "cloudinit_config" "minikube_setup" {
-  gzip          = false
-  base64_encode = false
-
-  part {
-    content_type = "text/x-shellscript"
-    filename     = "setup.sh"
-
-    content = templatefile(
-      "${path.module}/templates/setup.sh",
-      {
-        k8s_app_manifest = file("${path.module}/templates/k8s-app.yaml")
-      }
-    )
-  }
+locals {
+  user_data = templatefile(
+    "${path.module}/templates/setup.sh",
+    {
+      k8s_app_manifest_b64 = base64encode(file("${path.module}/templates/k8s-app.yaml"))
+    }
+  )
 }
 
 resource "aws_instance" "minikube_node" {
@@ -54,7 +46,9 @@ resource "aws_instance" "minikube_node" {
     delete_on_termination = true
   }
 
-  user_data = data.cloudinit_config.minikube_setup.rendered
+  user_data = local.user_data
+
+  user_data_replace_on_change = true
 
   tags = {
     Name = "minikube-ec2-instance"

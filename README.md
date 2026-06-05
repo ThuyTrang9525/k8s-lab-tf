@@ -25,12 +25,14 @@ ec2_public_ip = "x.x.x.x"
 ssh_command   = "ssh -i minikube-key.pem ubuntu@x.x.x.x"
 ```
 
-Truy cập `alb_dns_name` trên trình duyệt là xong. Đợi ~3 phút để EC2 bootstrap xong.
+Truy cập `alb_dns_name` trên trình duyệt. Đợi ~4 phút để EC2 bootstrap và kind cluster khởi động xong.
 
 ```bash
 # Dọn dẹp toàn bộ
 terraform destroy -auto-approve
 ```
+
+Destroy xong apply lại bình thường — tất cả resource names dùng `name_prefix` để tránh conflict.
 
 ---
 
@@ -44,16 +46,17 @@ terraform destroy -auto-approve
                        ▼
 ┌─────────────────────────────────────────────────────┐
 │            AWS Application Load Balancer            │
-│                   (port 80 public)                  │
+│         Security Group: port 80 từ internet         │
 └──────────────────────┬──────────────────────────────┘
                        │ forward :30080
                        ▼
 ┌─────────────────────────────────────────────────────┐
 │                  EC2 t3.small                       │
-│              (Security Group: 22, 30080)            │
+│       Security Group: port 22 + 30080 từ ALB SG     │
 │                                                     │
 │  ┌───────────────────────────────────────────────┐  │
-│  │           kind cluster (Docker)               │  │
+│  │        kind cluster (Docker container)        │  │
+│  │   extraPortMappings: host:30080→container:30080│  │
 │  │                                               │  │
 │  │   ┌─────────────────────────────────────┐     │  │
 │  │   │  Service NodePort :30080            │     │  │
@@ -61,13 +64,13 @@ terraform destroy -auto-approve
 │  │                  │                            │  │
 │  │   ┌─────────────────────────────────────┐     │  │
 │  │   │  Deployment: nginx:alpine x2 pods   │     │  │
-│  │   │  HTML served from ConfigMap         │     │  │
+│  │   │  HTML từ ConfigMap (volume mount)   │     │  │
 │  │   └─────────────────────────────────────┘     │  │
 │  └───────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
 ```
 
-**Request flow:**
+Request flow:
 ```
 Browser → ALB :80 → EC2 :30080 → docker-proxy → kind → NodePort → nginx Pod → HTML
 ```
@@ -76,22 +79,19 @@ Browser → ALB :80 → EC2 :30080 → docker-proxy → kind → NodePort → ng
 
 ## Cách wire providers
 
-Project dùng 4 providers phối hợp để đạt được 1-click automation:
+Project dùng 3 providers phối hợp để đạt 1-click automation:
 
 ```hcl
 terraform {
   required_providers {
-    aws       = { source = "hashicorp/aws",       version = "~> 5.0" }
-    tls       = { source = "hashicorp/tls",       version = "~> 4.0" }
-    local     = { source = "hashicorp/local",     version = "~> 2.5" }
-    cloudinit = { source = "hashicorp/cloudinit", version = "~> 2.3" }
+    aws   = { source = "hashicorp/aws",   version = "~> 5.0" }
+    tls   = { source = "hashicorp/tls",   version = "~> 4.0" }
+    local = { source = "hashicorp/local", version = "~> 2.5" }
   }
 }
 ```
 
 ### `tls` provider — sinh SSH key tự động
-
-Thay vì yêu cầu người dùng tạo key thủ công, `tls` provider generate RSA key pair ngay trong Terraform:
 
 ```hcl
 resource "tls_private_key" "minikube_key" {
@@ -100,7 +100,7 @@ resource "tls_private_key" "minikube_key" {
 }
 ```
 
-Public key được đẩy lên AWS, private key được chuyển sang `local` provider.
+Không cần tạo key thủ công. Public key được đẩy lên AWS, private key chuyển sang `local` provider.
 
 ### `local` provider — ghi file `.pem` xuống máy
 
@@ -112,47 +112,41 @@ resource "local_file" "private_key" {
 }
 ```
 
-Người dùng có ngay file `minikube-key.pem` để SSH vào EC2 mà không cần làm gì thêm.
-
-### `cloudinit` provider — render bootstrap script
-
-`setup.sh` cần nhúng nội dung của `k8s-app.yaml` vào bên trong. `cloudinit` xử lý việc render template và encode đúng format cho EC2 `user_data`:
-
-```hcl
-data "cloudinit_config" "minikube_setup" {
-  part {
-    content_type = "text/x-shellscript"
-    content = templatefile("templates/setup.sh", {
-      k8s_app_manifest = file("templates/k8s-app.yaml")
-    })
-  }
-}
-```
+File `minikube-key.pem` có sẵn ngay sau `terraform apply`, dùng SSH vào EC2 luôn.
 
 ### `aws` provider — tạo toàn bộ hạ tầng
 
-Nhận output từ 3 provider trên để hoàn thiện:
-- `aws_key_pair` ← public key từ `tls`
-- `aws_instance.user_data` ← rendered script từ `cloudinit`
-- File `.pem` đã có sẵn ← từ `local`
+`user_data` được inject trực tiếp qua `templatefile()` — k8s manifest được base64 encode trước khi nhúng vào script để tránh lỗi ký tự đặc biệt:
+
+```hcl
+locals {
+  user_data = templatefile("templates/setup.sh", {
+    k8s_app_manifest_b64 = base64encode(file("templates/k8s-app.yaml"))
+  })
+}
+```
+
+Bên trong `setup.sh`, Python decode base64 ra file YAML sạch:
+
+```bash
+python3 - << 'PYEOF'
+import base64
+content = base64.b64decode("${k8s_app_manifest_b64}").decode("utf-8")
+with open("/root/k8s-app.yaml", "w") as f:
+    f.write(content)
+PYEOF
+```
 
 ### Dependency chain
 
 ```
 tls_private_key
-    ├──► aws_key_pair ──────────────► aws_instance
-    └──► local_file (minikube-key.pem)
+    ├──► aws_key_pair        ──► aws_instance
+    └──► local_file (.pem)
 
-templatefile(setup.sh + k8s-app.yaml)
-    └──► cloudinit_config ──────────► aws_instance.user_data
+templatefile(setup.sh)
+    └── base64(k8s-app.yaml) ──► aws_instance.user_data
 ```
-
----
-
-## Tại sao dùng kind thay Minikube
-
-`t3.small` chỉ có 2GB RAM. Minikube cần VM layer bổ sung nên thường xuyên OOM. kind chạy thẳng trên Docker container, nhẹ hơn đáng kể và có `extraPortMappings` để expose NodePort ra host mà không cần socat thủ công.
-
 
 ---
 
@@ -160,54 +154,63 @@ templatefile(setup.sh + k8s-app.yaml)
 
 ### EC2 Instance (`ec2.tf`)
 
-Là "máy chủ" duy nhất trong hệ thống. Chạy Ubuntu 22.04, type `t3.small` (2GB RAM).  
-Toàn bộ logic bootstrap được nhúng vào `user_data` — EC2 tự cài đặt và cấu hình mọi thứ khi khởi động lần đầu, không cần SSH vào làm tay.
+Chạy Ubuntu 22.04, type `t3.small` (2GB RAM). Toàn bộ logic bootstrap được nhúng vào `user_data` — EC2 tự cài đặt và cấu hình mọi thứ khi khởi động, không cần SSH vào làm tay.
 
 ### kind Cluster (`templates/setup.sh`)
 
-kind (Kubernetes IN Docker) chạy một node k8s cluster bên trong một Docker container trên EC2.  
-Khác với Minikube, kind không cần VM layer nên nhẹ hơn và phù hợp với instance RAM thấp.
+kind (Kubernetes IN Docker) chạy một node k8s cluster bên trong Docker container trên EC2. Nhẹ hơn Minikube vì không có VM layer, phù hợp với instance RAM thấp.
 
 `extraPortMappings` trong kind config làm cầu nối trực tiếp:
 ```
-EC2 host port 30080  ──►  kind container port 30080  ──►  NodePort Service
+EC2 host :30080  ──►  kind container :30080  ──►  NodePort Service
 ```
-Không cần socat hay bất kỳ proxy thủ công nào.
 
 ### Kubernetes App (`templates/k8s-app.yaml`)
 
-3 object K8s phối hợp với nhau:
-
 | Object | Vai trò |
 |---|---|
-| `ConfigMap` | Chứa nội dung HTML trang web, inject vào pod qua volume mount |
-| `Deployment` | Chạy 2 replica nginx:alpine, mount HTML từ ConfigMap |
-| `Service` (NodePort) | Expose app ra port 30080, là điểm nhận traffic từ ALB |
-
-HTML được lưu trong ConfigMap thay vì build Docker image riêng — đơn giản, không cần registry, thay đổi nội dung chỉ cần `kubectl apply` lại.
+| `ConfigMap` | Chứa HTML trang web, inject vào pod qua volume mount |
+| `Deployment` | 2 replica nginx:alpine, mount HTML từ ConfigMap |
+| `Service` NodePort | Expose app ra port 30080 |
 
 ### Application Load Balancer (`alb.tf`)
 
-ALB đứng trước EC2, là entry point duy nhất từ internet.
-
-- **Listener**: lắng nghe port 80 HTTP
-- **Target Group**: trỏ vào EC2 port 30080, health check `GET /` expect 200
-- **Security**: chỉ EC2 SG mới nhận traffic từ ALB SG trên port 30080 — EC2 không expose thẳng ra internet
+- Listener port 80 HTTP
+- Target group trỏ EC2 port 30080, health check `GET /` expect 200
+- Dùng `name_prefix` thay `name` để tránh conflict khi destroy/apply lại
 
 ### Security Groups (`security-groups.tf`)
 
-Hai lớp bảo vệ:
-
 ```
-Internet → ALB SG (chỉ port 80)
-ALB SG  → EC2 SG (chỉ port 30080 từ ALB SG + port 22 SSH)
+Internet ──► ALB SG  (port 80 only)
+ALB SG   ──► EC2 SG  (port 30080 from ALB SG + port 22 SSH)
 ```
 
-EC2 không thể bị truy cập trực tiếp trên port 30080 từ internet — chỉ đi qua ALB.
+EC2 không expose port 30080 thẳng ra internet — chỉ nhận traffic qua ALB.
 
 ### Key Pair (`keypair.tf`)
 
-`tls` provider generate RSA 4096-bit key ngay trong Terraform state.  
-`local` provider ghi private key ra file `minikube-key.pem` — người dùng có thể SSH vào debug mà không cần tạo key thủ công trước.
+`tls` provider generate RSA 4096-bit key trong Terraform state. `local` provider ghi ra `minikube-key.pem` — SSH vào EC2 debug không cần chuẩn bị gì trước.
 
-> Lưu ý: `minikube-key.pem` chứa private key, không commit lên git (đã có trong `.gitignore`).
+> `minikube-key.pem` chứa private key, không commit lên git (đã có trong `.gitignore`).
+
+---
+
+## Debug
+
+```bash
+# SSH vào EC2
+ssh -i minikube-key.pem ubuntu@<ec2_public_ip>
+
+# Xem bootstrap log
+sudo tail -50 /var/log/user_data_setup.log
+
+# Check port 30080
+sudo ss -tulpn | grep 30080
+
+# Test app trực tiếp
+curl -s -o /dev/null -w "%{http_code}" http://localhost:30080
+
+# Xem K8s resources
+kubectl get all
+```

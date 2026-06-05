@@ -79,9 +79,12 @@ kind create cluster \
 
 echo "=== Writing Manifest ==="
 
-cat << 'EOF' > /root/k8s-app.yaml
-${k8s_app_manifest}
-EOF
+python3 - << 'PYEOF'
+import base64
+content = base64.b64decode("${k8s_app_manifest_b64}").decode("utf-8")
+with open("/root/k8s-app.yaml", "w") as f:
+    f.write(content)
+PYEOF
 
 # -------------------------------------------------------------
 # DEPLOY APP
