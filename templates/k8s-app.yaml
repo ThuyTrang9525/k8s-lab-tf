@@ -1,0 +1,258 @@
+# [REQUIREMENT MAPPING: Req 3 - App runs inside K8s (not installed directly on EC2)]
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-aws-deployment
+  labels:
+    app: hello-aws
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: hello-aws
+
+  template:
+    metadata:
+      labels:
+        app: hello-aws
+
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+
+        ports:
+        - containerPort: 80
+
+        volumeMounts:
+        - name: html-volume
+          mountPath: /usr/share/nginx/html
+
+      volumes:
+      - name: html-volume
+        configMap:
+          name: hello-aws-html
+
+---
+# [REQUIREMENT MAPPING: Req 3 - HTML injected via ConfigMap]
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: hello-aws-html
+
+data:
+  index.html: |
+    <!DOCTYPE html>
+<html>
+<head>
+    <title>Cloud Girl Lab</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            height: 100vh;
+
+            display: flex;
+            justify-content: center;
+            align-items: center;
+
+            background: linear-gradient(
+                135deg,
+                #ffe4ec 0%,
+                #fff5f8 50%,
+                #ffffff 100%
+            );
+
+            overflow: hidden;
+        }
+
+        .card {
+            width: 750px;
+            text-align: center;
+
+            background: rgba(255,255,255,0.85);
+            backdrop-filter: blur(15px);
+
+            padding: 50px;
+
+            border-radius: 30px;
+
+            box-shadow:
+                0 20px 50px rgba(255, 182, 193, 0.25);
+
+            border: 1px solid rgba(255,255,255,0.6);
+        }
+
+        .emoji {
+            font-size: 70px;
+            margin-bottom: 15px;
+        }
+
+        h1 {
+            font-size: 3.2rem;
+            margin-bottom: 15px;
+
+            background: linear-gradient(
+                to right,
+                #ff5fa2,
+                #ff8ec6
+            );
+
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1.2rem;
+            margin-bottom: 30px;
+            line-height: 1.8;
+        }
+
+        .tech-stack {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+
+        .badge {
+            background: #ff7eb6;
+            color: white;
+
+            padding: 10px 18px;
+            border-radius: 999px;
+
+            font-weight: 600;
+            font-size: 14px;
+
+            box-shadow:
+                0 5px 15px rgba(255,126,182,0.3);
+        }
+
+        .status {
+            margin-top: 20px;
+
+            background: #fff0f6;
+
+            border-radius: 15px;
+
+            padding: 20px;
+
+            color: #444;
+
+            line-height: 1.8;
+        }
+
+        .success {
+            color: #ff4f9a;
+            font-weight: bold;
+        }
+
+        .footer {
+            margin-top: 25px;
+            color: #999;
+            font-size: 14px;
+        }
+
+        .heart {
+            color: #ff5fa2;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.15);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="card">
+
+    <div class="emoji">
+        ☁️🎀
+    </div>
+
+    <h1>Hello AWS!</h1>
+
+    <p class="subtitle">
+        Welcome to my Cloud Computing Project.<br>
+        Successfully deployed on Kubernetes with Terraform Automation.
+    </p>
+
+    <div class="tech-stack">
+        <div class="badge">AWS EC2</div>
+        <div class="badge">Terraform</div>
+        <div class="badge">Minikube</div>
+        <div class="badge">Kubernetes</div>
+        <div class="badge">ALB</div>
+    </div>
+
+    <div class="status">
+        <p>
+            ✅ Application deployed successfully inside
+            <span class="success">Kubernetes Cluster</span>
+        </p>
+
+        <p>
+            ✅ Traffic routed through
+            <span class="success">AWS Application Load Balancer</span>
+        </p>
+
+        <p>
+            ✅ Fully automated using
+            <span class="success">Terraform One-Click Deployment</span>
+        </p>
+    </div>
+
+    <div class="footer">
+        Made with <span class="heart">♥</span>
+    </div>
+
+</div>
+
+</body>
+</html>
+
+---
+# [REQUIREMENT MAPPING: Req 3 - Service NodePort]
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: hello-aws-service
+
+spec:
+  type: NodePort
+
+  selector:
+    app: hello-aws
+
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
