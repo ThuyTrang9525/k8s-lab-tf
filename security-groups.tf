@@ -3,7 +3,7 @@
 # -------------------------------------------------------------
 
 resource "aws_security_group" "alb_sg" {
-  name        = "minikube-alb-sg"
+  name_prefix = "minikube-alb-sg-"
   description = "Allows HTTP traffic from the Internet to the ALB"
   vpc_id      = data.aws_vpc.default.id
 
@@ -27,10 +27,14 @@ resource "aws_security_group" "alb_sg" {
   tags = {
     Name = "minikube-alb-sg"
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_security_group" "ec2_sg" {
-  name        = "minikube-ec2-sg"
+  name_prefix = "minikube-ec2-sg-"
   description = "Allows SSH and NodePort traffic"
   vpc_id      = data.aws_vpc.default.id
 
@@ -61,5 +65,9 @@ resource "aws_security_group" "ec2_sg" {
 
   tags = {
     Name = "minikube-ec2-sg"
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }

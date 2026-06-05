@@ -11,5 +11,5 @@ variable "aws_region" {
 variable "instance_type" {
   description = "The EC2 instance type to run Minikube"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 }

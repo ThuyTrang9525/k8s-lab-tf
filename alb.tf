@@ -3,7 +3,7 @@
 # -------------------------------------------------------------
 
 resource "aws_lb" "external_alb" {
-  name               = "minikube-alb"
+  name_prefix        = "mk-alb"
   internal           = false
   load_balancer_type = "application"
 
@@ -22,7 +22,7 @@ resource "aws_lb" "external_alb" {
 }
 
 resource "aws_lb_target_group" "ec2_target_group" {
-  name        = "minikube-tg"
+  name_prefix = "mk-tg"
   port        = 30080
   protocol    = "HTTP"
   vpc_id      = data.aws_vpc.default.id

@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # -------------------------------------------------------------
-# EC2 BOOTSTRAP SCRIPT
+# EC2 BOOTSTRAP SCRIPT - uses kind (lighter than minikube)
 # -------------------------------------------------------------
 
 exec > >(tee -i /var/log/user_data_setup.log) 2>&1
 
 echo "=== Starting Initialization ==="
-
 date
 
 export HOME=/root
@@ -20,16 +19,14 @@ export KUBECONFIG=/root/.kube/config
 apt-get update -y
 
 apt-get install -y \
-docker.io \
-conntrack \
-socat \
-curl \
-jq
+  docker.io \
+  conntrack \
+  socat \
+  curl \
+  jq
 
 systemctl start docker
 systemctl enable docker
-
-usermod -aG docker ubuntu
 
 # -------------------------------------------------------------
 # INSTALL KUBECTL
@@ -38,116 +35,75 @@ usermod -aG docker ubuntu
 echo "=== Installing kubectl ==="
 
 curl -LO \
-"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 
 install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-
 rm kubectl
 
 # -------------------------------------------------------------
-# INSTALL MINIKUBE
+# INSTALL KIND
 # -------------------------------------------------------------
 
-echo "=== Installing Minikube ==="
+echo "=== Installing kind ==="
 
-curl -LO \
-https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+curl -Lo /usr/local/bin/kind \
+  https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
 
-install minikube-linux-amd64 /usr/local/bin/minikube
-
-rm minikube-linux-amd64
+chmod +x /usr/local/bin/kind
 
 # -------------------------------------------------------------
-# START MINIKUBE
+# START KIND CLUSTER
 # -------------------------------------------------------------
 
-echo "=== Starting Minikube ==="
+echo "=== Starting kind cluster ==="
 
-minikube start \
---driver=docker \
---force \
-  --memory=768mb \
-  --cpus=1
+cat << 'KINDCFG' > /tmp/kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30080
+    hostPort: 30080
+    protocol: TCP
+KINDCFG
 
-sleep 15
+kind create cluster \
+  --name k8s-lab \
+  --config /tmp/kind-config.yaml \
+  --wait 120s
 
 # -------------------------------------------------------------
-# CREATE K8S MANIFEST
+# WRITE K8S MANIFEST
 # -------------------------------------------------------------
 
 echo "=== Writing Manifest ==="
 
-cat << 'EOF' > /home/ubuntu/k8s-app.yaml
+cat << 'EOF' > /root/k8s-app.yaml
 ${k8s_app_manifest}
 EOF
 
-chown ubuntu:ubuntu /home/ubuntu/k8s-app.yaml
-
 # -------------------------------------------------------------
-# COPY KUBECONFIG
-# -------------------------------------------------------------
-
-mkdir -p /home/ubuntu/.kube
-
-cp /root/.kube/config /home/ubuntu/.kube/config
-
-cp -r /root/.minikube /home/ubuntu/.minikube
-
-sed -i \
-'s|/root/.minikube|/home/ubuntu/.minikube|g' \
-/home/ubuntu/.kube/config
-
-chown -R ubuntu:ubuntu /home/ubuntu/.kube
-chown -R ubuntu:ubuntu /home/ubuntu/.minikube
-
-# -------------------------------------------------------------
-# DEPLOY APP TO K8S
+# DEPLOY APP
 # -------------------------------------------------------------
 
 echo "=== Deploying Application ==="
 
-kubectl apply -f /home/ubuntu/k8s-app.yaml
+kubectl apply -f /root/k8s-app.yaml
 
 kubectl rollout status \
-deployment/hello-aws-deployment \
---timeout=120s
+  deployment/hello-aws-deployment \
+  --timeout=120s
 
 # -------------------------------------------------------------
-# GET MINIKUBE IP
+# COPY KUBECONFIG FOR ubuntu USER
 # -------------------------------------------------------------
 
-MINIKUBE_IP=$(minikube ip)
-
-echo "Minikube IP: $MINIKUBE_IP"
-
-# -------------------------------------------------------------
-# SOCAT FORWARD
-# EC2:30080 -> MINIKUBE:30080
-# -------------------------------------------------------------
-
-cat << EOF > /etc/systemd/system/minikube-forward.service
-
-[Unit]
-Description=Minikube Port Forward Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/socat TCP-LISTEN:30080,fork,reuseaddr TCP:$MINIKUBE_IP:30080
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-
-EOF
-
-systemctl daemon-reload
-
-systemctl enable minikube-forward.service
-
-systemctl start minikube-forward.service
+mkdir -p /home/ubuntu/.kube
+cp /root/.kube/config /home/ubuntu/.kube/config
+# Fix server address: kind dùng 127.0.0.1 nên ubuntu user dùng được luôn
+chown -R ubuntu:ubuntu /home/ubuntu/.kube
+echo 'export KUBECONFIG=/home/ubuntu/.kube/config' >> /home/ubuntu/.bashrc
 
 echo "=== Deployment Completed Successfully ==="
-
 date

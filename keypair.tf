@@ -8,7 +8,7 @@ resource "tls_private_key" "minikube_key" {
 }
 
 resource "aws_key_pair" "deployer" {
-  key_name   = "minikube-key-pair"
+  key_name_prefix = "minikube-key-"
   public_key = tls_private_key.minikube_key.public_key_openssh
 }
 
